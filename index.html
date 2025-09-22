@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motion Tracker</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #000;
+            color: #fff;
+            overflow-x: hidden;
+        }
+        
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+        }
+        
+        #videoElement {
+            width: 100%;
+            max-width: 400px;
+            height: auto;
+            border: 2px solid #333;
+            border-radius: 10px;
+        }
+        
+        #canvasElement {
+            width: 100%;
+            max-width: 400px;
+            height: auto;
+            border: 2px solid #333;
+            border-radius: 10px;
+            display: none;
+        }
+        
+        .controls {
+            margin: 20px 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .settings {
+            margin: 20px 0;
+        }
+        
+        .setting {
+            margin: 10px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        label {
+            min-width: 120px;
+        }
+        
+        input[type="range"] {
+            flex: 1;
+            max-width: 200px;
+        }
+        
+        .info {
+            background: #333;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        
+        .motion-data {
+            font-family: monospace;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        
+        .error {
+            background: #ff4444;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📱 Motion Tracker</h1>
+        
+        <div class="controls">
+            <button id="startBtn">Start Camera</button>
+            <button id="stopBtn" disabled>Stop Camera</button>
+            <button id="toggleTracking" disabled>Start Tracking</button>
+            <button id="toggleDisplay">Show Debug View</button>
+        </div>
+        
+        <video id="videoElement" autoplay muted playsinline></video>
+        <canvas id="canvasElement"></canvas>
+        
+        <div class="settings">
+            <div class="setting">
+                <label>Sensitivity:</label>
+                <input type="range" id="sensitivity" min="1" max="50" value="15">
+                <span id="sensitivityValue">15</span>
+            </div>
+            <div class="setting">
+                <label>Min Area:</label>
+                <input type="range" id="minArea" min="100" max="5000" value="500">
+                <span id="minAreaValue">500</span>
+            </div>
+            <div class="setting">
+                <label>Smoothing:</label>
+                <input type="range" id="smoothing" min="0" max="10" value="3">
+                <span id="smoothingValue">3</span>
+            </div>
+        </div>
+        
+        <div class="info">
+            <h3>📋 Troubleshooting Camera Issues:</h3>
+            <ul>
+                <li><strong>Chrome/Safari:</strong> Make sure you're using HTTPS (not HTTP)</li>
+                <li><strong>Permission:</strong> Tap the camera icon in address bar to allow access</li>
+                <li><strong>iOS Safari:</strong> Go to Settings > Safari > Camera > Allow</li>
+                <li><strong>Android Chrome:</strong> Check site permissions in browser settings</li>
+                <li><strong>Other apps:</strong> Close any apps currently using the camera</li>
+                <li><strong>Private browsing:</strong> Camera may be blocked in incognito mode</li>
+            </ul>
+        </div>
+        
+        <div class="info">
+            <div class="motion-data" id="motionData">
+                Status: Ready<br>
+                Motion Detected: No<br>
+                Objects Tracked: 0<br>
+                Frame Rate: 0 FPS
+            </div>
+        </div>
+        
+        <div id="errorMsg"></div>
+    </div>
+
+    <script>
+        class MotionTracker {
+            constructor() {
+                this.video = document.getElementById('videoElement');
+                this.canvas = document.getElementById('canvasElement');
+                this.ctx = this.canvas.getContext('2d');
+                this.isTracking = false;
+                this.prevFrame = null;
+                this.motionData = [];
+                this.frameCount = 0;
+                this.lastTime = Date.now();
+                
+                // Settings
+                this.sensitivity = 15;
+                this.minArea = 500;
+                this.smoothingFactor = 3;
+                
+                this.initEventListeners();
+            }
+            
+            initEventListeners() {
+                document.getElementById('startBtn').addEventListener('click', () => this.startCamera());
+                document.getElementById('stopBtn').addEventListener('click', () => this.stopCamera());
+                document.getElementById('toggleTracking').addEventListener('click', () => this.toggleTracking());
+                document.getElementById('toggleDisplay').addEventListener('click', () => this.toggleDisplay());
+                
+                // Settings sliders
+                const updateSetting = (id, prop, displayId) => {
+                    const slider = document.getElementById(id);
+                    const display = document.getElementById(displayId);
+                    slider.addEventListener('input', () => {
+                        this[prop] = parseInt(slider.value);
+                        display.textContent = slider.value;
+                    });
+                };
+                
+                updateSetting('sensitivity', 'sensitivity', 'sensitivityValue');
+                updateSetting('minArea', 'minArea', 'minAreaValue');
+                updateSetting('smoothing', 'smoothingFactor', 'smoothingValue');
+            }
+            
+            async startCamera() {
+                try {
+                    // Check if getUserMedia is supported
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                        throw new Error('Camera API not supported in this browser');
+                    }
+                    
+                    // Try different camera configurations
+                    const configurations = [
+                        { video: { facingMode: 'environment' } }, // Back camera first
+                        { video: { facingMode: 'user' } }, // Front camera fallback
+                        { video: true }, // Any camera
+                        { video: { width: 640, height: 480 } } // Simple resolution
+                    ];
+                    
+                    let stream = null;
+                    let lastError = null;
+                    
+                    for (const config of configurations) {
+                        try {
+                            this.showError(`Trying to access camera... (${config.video.facingMode || 'any camera'})`);
+                            stream = await navigator.mediaDevices.getUserMedia(config);
+                            break; // Success!
+                        } catch (err) {
+                            lastError = err;
+                            console.log(`Failed with config:`, config, err);
+                            continue; // Try next configuration
+                        }
+                    }
+                    
+                    if (!stream) {
+                        throw lastError || new Error('All camera access attempts failed');
+                    }
+                    
+                    this.video.srcObject = stream;
+                    
+                    this.video.addEventListener('loadedmetadata', () => {
+                        this.canvas.width = this.video.videoWidth;
+                        this.canvas.height = this.video.videoHeight;
+                        this.canvas.style.width = this.video.offsetWidth + 'px';
+                        this.canvas.style.height = this.video.offsetHeight + 'px';
+                        this.showError('Camera started successfully! ✅');
+                        setTimeout(() => this.clearError(), 2000);
+                    });
+                    
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('stopBtn').disabled = false;
+                    document.getElementById('toggleTracking').disabled = false;
+                    
+                } catch (error) {
+                    let errorMessage = 'Camera access failed: ';
+                    
+                    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                        errorMessage += 'Permission denied. Please allow camera access and try again.';
+                    } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+                        errorMessage += 'No camera found on this device.';
+                    } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+                        errorMessage += 'Camera is being used by another app. Close other camera apps and try again.';
+                    } else if (error.name === 'OverconstrainedError' || error.name === 'ConstraintNotSatisfiedError') {
+                        errorMessage += 'Camera constraints not supported. Trying fallback options...';
+                    } else if (error.name === 'NotSupportedError') {
+                        errorMessage += 'Camera not supported in this browser or context.';
+                    } else {
+                        errorMessage += error.message;
+                    }
+                    
+                    this.showError(errorMessage);
+                    console.error('Detailed camera error:', error);
+                }
+            }
+            
+            stopCamera() {
+                if (this.video.srcObject) {
+                    this.video.srcObject.getTracks().forEach(track => track.stop());
+                    this.video.srcObject = null;
+                }
+                
+                this.isTracking = false;
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = true;
+                document.getElementById('toggleTracking').disabled = true;
+                document.getElementById('toggleTracking').textContent = 'Start Tracking';
+            }
+            
+            toggleTracking() {
+                this.isTracking = !this.isTracking;
+                const btn = document.getElementById('toggleTracking');
+                
+                if (this.isTracking) {
+                    btn.textContent = 'Stop Tracking';
+                    this.startMotionDetection();
+                } else {
+                    btn.textContent = 'Start Tracking';
+                }
+            }
+            
+            toggleDisplay() {
+                const video = this.video;
+                const canvas = this.canvas;
+                
+                if (canvas.style.display === 'none') {
+                    canvas.style.display = 'block';
+                    video.style.display = 'none';
+                    document.getElementById('toggleDisplay').textContent = 'Show Camera View';
+                } else {
+                    canvas.style.display = 'none';
+                    video.style.display = 'block';
+                    document.getElementById('toggleDisplay').textContent = 'Show Debug View';
+                }
+            }
+            
+            startMotionDetection() {
+                const detect = () => {
+                    if (!this.isTracking) return;
+                    
+                    this.processFrame();
+                    requestAnimationFrame(detect);
+                };
+                detect();
+            }
+            
+            processFrame() {
+                if (this.video.readyState !== this.video.HAVE_ENOUGH_DATA) return;
+                
+                const width = this.canvas.width;
+                const height = this.canvas.height;
+                
+                // Draw current frame
+                this.ctx.drawImage(this.video, 0, 0, width, height);
+                const currentFrame = this.ctx.getImageData(0, 0, width, height);
+                
+                if (this.prevFrame) {
+                    const motionAreas = this.detectMotion(this.prevFrame, currentFrame);
+                    this.drawMotionAreas(motionAreas);
+                    this.updateMotionData(motionAreas);
+                }
+                
+                // Store current frame for next comparison
+                this.prevFrame = this.ctx.getImageData(0, 0, width, height);
+                
+                // Calculate FPS
+                this.frameCount++;
+                const now = Date.now();
+                if (now - this.lastTime >= 1000) {
+                    const fps = Math.round((this.frameCount * 1000) / (now - this.lastTime));
+                    this.updateFPS(fps);
+                    this.frameCount = 0;
+                    this.lastTime = now;
+                }
+            }
+            
+            detectMotion(prevFrame, currentFrame) {
+                const width = this.canvas.width;
+                const height = this.canvas.height;
+                const diffData = new Uint8ClampedArray(width * height * 4);
+                
+                // Calculate difference between frames
+                for (let i = 0; i < prevFrame.data.length; i += 4) {
+                    const prevGray = (prevFrame.data[i] + prevFrame.data[i + 1] + prevFrame.data[i + 2]) / 3;
+                    const currentGray = (currentFrame.data[i] + currentFrame.data[i + 1] + currentFrame.data[i + 2]) / 3;
+                    const diff = Math.abs(prevGray - currentGray);
+                    
+                    const threshold = this.sensitivity * 2;
+                    if (diff > threshold) {
+                        diffData[i] = 255;     // R
+                        diffData[i + 1] = 0;   // G
+                        diffData[i + 2] = 0;   // B
+                        diffData[i + 3] = 255; // A
+                    } else {
+                        diffData[i] = 0;
+                        diffData[i + 1] = 0;
+                        diffData[i + 2] = 0;
+                        diffData[i + 3] = 255;
+                    }
+                }
+                
+                // Find connected components (motion areas)
+                return this.findMotionAreas(diffData, width, height);
+            }
+            
+            findMotionAreas(diffData, width, height) {
+                const visited = new Array(width * height).fill(false);
+                const motionAreas = [];
+                
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const idx = y * width + x;
+                        if (!visited[idx] && diffData[idx * 4] > 0) {
+                            const area = this.floodFill(diffData, visited, x, y, width, height);
+                            if (area.pixels.length > this.minArea) {
+                                motionAreas.push(area);
+                            }
+                        }
+                    }
+                }
+                
+                return motionAreas;
+            }
+            
+            floodFill(diffData, visited, startX, startY, width, height) {
+                const stack = [[startX, startY]];
+                const pixels = [];
+                let minX = startX, maxX = startX;
+                let minY = startY, maxY = startY;
+                
+                while (stack.length > 0) {
+                    const [x, y] = stack.pop();
+                    
+                    if (x < 0 || x >= width || y < 0 || y >= height) continue;
+                    
+                    const idx = y * width + x;
+                    if (visited[idx] || diffData[idx * 4] === 0) continue;
+                    
+                    visited[idx] = true;
+                    pixels.push([x, y]);
+                    
+                    minX = Math.min(minX, x);
+                    maxX = Math.max(maxX, x);
+                    minY = Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
+                    
+                    // Add neighbors
+                    stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+                }
+                
+                return {
+                    pixels,
+                    boundingBox: { minX, maxX, minY, maxY },
+                    center: {
+                        x: (minX + maxX) / 2,
+                        y: (minY + maxY) / 2
+                    }
+                };
+            }
+            
+            drawMotionAreas(motionAreas) {
+                // Redraw the video frame first
+                this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+                
+                // Draw motion detection overlay
+                this.ctx.strokeStyle = '#00ff00';
+                this.ctx.fillStyle = 'rgba(0, 255, 0, 0.3)';
+                this.ctx.lineWidth = 2;
+                
+                motionAreas.forEach((area, index) => {
+                    const { boundingBox, center } = area;
+                    const width = boundingBox.maxX - boundingBox.minX;
+                    const height = boundingBox.maxY - boundingBox.minY;
+                    
+                    // Draw bounding box
+                    this.ctx.strokeRect(boundingBox.minX, boundingBox.minY, width, height);
+                    this.ctx.fillRect(boundingBox.minX, boundingBox.minY, width, height);
+                    
+                    // Draw center point
+                    this.ctx.fillStyle = '#ff0000';
+                    this.ctx.beginPath();
+                    this.ctx.arc(center.x, center.y, 5, 0, 2 * Math.PI);
+                    this.ctx.fill();
+                    
+                    // Draw label
+                    this.ctx.fillStyle = '#ffffff';
+                    this.ctx.font = '16px Arial';
+                    this.ctx.fillText(`Object ${index + 1}`, boundingBox.minX, boundingBox.minY - 5);
+                    
+                    this.ctx.fillStyle = 'rgba(0, 255, 0, 0.3)';
+                });
+            }
+            
+            updateMotionData(motionAreas) {
+                const hasMotion = motionAreas.length > 0;
+                const dataElement = document.getElementById('motionData');
+                
+                dataElement.innerHTML = `
+                    Status: ${this.isTracking ? 'Tracking' : 'Stopped'}<br>
+                    Motion Detected: ${hasMotion ? 'Yes' : 'No'}<br>
+                    Objects Tracked: ${motionAreas.length}<br>
+                    Frame Rate: <span id="fpsDisplay">0</span> FPS
+                `;
+                
+                if (motionAreas.length > 0) {
+                    let objectsInfo = '<br><strong>Detected Objects:</strong><br>';
+                    motionAreas.forEach((area, index) => {
+                        objectsInfo += `Object ${index + 1}: Center (${Math.round(area.center.x)}, ${Math.round(area.center.y)}), Size: ${area.pixels.length}px<br>`;
+                    });
+                    dataElement.innerHTML += objectsInfo;
+                }
+            }
+            
+            updateFPS(fps) {
+                const fpsElement = document.getElementById('fpsDisplay');
+                if (fpsElement) {
+                    fpsElement.textContent = fps;
+                }
+            }
+            
+            showError(message) {
+                const errorElement = document.getElementById('errorMsg');
+                errorElement.innerHTML = `<div class="error">${message}</div>`;
+            }
+            
+            clearError() {
+                document.getElementById('errorMsg').innerHTML = '';
+            }
+        }
+        
+        // Initialize the motion tracker when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new MotionTracker();
+        });
+    </script>
+</body>
+</html>
